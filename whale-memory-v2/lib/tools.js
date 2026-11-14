@@ -19,6 +19,11 @@ import {
   ALPHA_PIN,
 } from './model.js'
 import { StoreError } from './store.js'
+import { select, DEFAULT_POLICY } from './retrieve.js'
+
+// 检索比注入宽松：门槛低、名额大，且能被翻到的状态都要查得到
+const SEARCH_POLICY = { ...DEFAULT_POLICY, threshold: 0.15, maxItems: 100 }
+const SEARCHABLE_STATUSES = ['candidate', 'active', 'contested', 'superseded', 'archived']
 
 /** 会验证失败时抛的自家错误。 */
 export class ToolError extends Error {
@@ -231,36 +236,28 @@ export function createTools({ store, clock = () => Date.now() }) {
       const layerFilter = optString(input, 'layer', 20)
       const projectFilter = optString(input, 'project', 100)
 
-      const q = gramsOf(query)
-      if (!q.size) return { ok: true, hits: [] }
+      // 交给检索层：饱和评分 + 两层稀有度 + 门槛卡 C + 去重
+      const { picked } = select(all, query, {
+        now: now(),
+        policy: SEARCH_POLICY,
+        layer: layerFilter,
+        project: projectFilter,
+        statuses: SEARCHABLE_STATUSES,
+        applyQuota: false,
+      })
 
-      // 最简打分：命中词数 / 查询词数，再按 alpha 和时间加权。
-      // T4 会换成饱和函数 + 稀有度筛选，这里先保证可用。
-      const scored = []
-      for (const e of all) {
-        if (!isSearchable(e)) continue
-        if (layerFilter && e.layer !== layerFilter) continue
-        if (projectFilter && e.project !== projectFilter) continue
-        const hay = gramsOf(`${e.summary} ${e.text} ${(e.keywords || []).join(' ')}`)
-        let hit = 0
-        for (const g of q) if (hay.has(g)) hit++
-        if (!hit) continue
-        const coverage = hit / q.size
-        const recency = Math.max(0, 1 - (now() - e.createdAt) / (30 * 86400000)) * 0.05
-        scored.push({ e, score: coverage + e.alpha * 0.2 + recency, coverage })
-      }
-      scored.sort((a, b) => b.score - a.score || b.e.createdAt - a.e.createdAt)
-
-      const hits = scored.slice(0, limit).map(({ e, coverage }) => ({
-        id: e.id,
-        summary: e.summary,
-        layer: e.layer,
-        project: e.project,
-        status: e.status,
-        alpha: e.alpha,
-        beta: e.beta,
-        at: e.createdAt,
-        coverage: Number(coverage.toFixed(3)),
+      const hits = picked.slice(0, limit).map(({ entry, C, P, nearMiss }) => ({
+        id: entry.id,
+        summary: entry.summary,
+        layer: entry.layer,
+        project: entry.project,
+        status: entry.status,
+        alpha: entry.alpha,
+        beta: entry.beta,
+        at: entry.createdAt,
+        C: Number(C.toFixed(3)),
+        P: Number(P.toFixed(3)),
+        ...(nearMiss ? { nearMiss: true } : {}),
       }))
       return { ok: true, hits }
     } catch (e) {

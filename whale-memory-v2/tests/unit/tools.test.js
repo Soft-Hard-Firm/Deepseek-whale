@@ -185,7 +185,7 @@ test('update：非法状态转移被拒', () => {
   assert.equal(r.error, 'bad_transition')
 })
 
-test('forget：只改状态，不物理删除，仍可检索', () => {
+test('forget：只改状态，不物理删除；不再参与检索，但仍可按 id 追溯', () => {
   const { store, tools } = fresh()
   const a = tools.remember({ text: '这条要被忘掉' })
   const r = tools.forget({ id: a.id, reason: '主人说忘了' })
@@ -196,8 +196,14 @@ test('forget：只改状态，不物理删除，仍可检索', () => {
   assert.equal(data.entries.length, 1, '不许物理删除')
   assert.equal(data.entries[0].status, 'invalidated')
 
+  // 检索不该再把它捞出来 —— 否则纠正过的错误会被重新当成事实
   const s = tools.search({ query: '忘掉' })
-  assert.equal(s.hits.length, 1, '被纠正的仍可追溯')
+  assert.equal(s.hits.length, 0, 'invalidated 不参与检索')
+
+  // 但直接按 id 仍能翻到全文，追溯性不丢
+  const rec = tools.recall({ id: a.id })
+  assert.equal(rec.ok, true)
+  assert.equal(rec.text, '这条要被忘掉')
 })
 
 test('TOOL_SPECS：参数是完整 JSON Schema，且带三条规矩', () => {
