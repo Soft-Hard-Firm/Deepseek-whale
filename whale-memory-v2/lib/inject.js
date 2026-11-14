@@ -66,11 +66,15 @@ export function isTimeSensitive(entry, now) {
 }
 
 /** 一条记忆渲染成一行。 */
-export function renderEntry(entry, { now, withTime = true } = {}) {
+export function renderEntry(
+  entry,
+  { now, withTime = true, maxLen = 60, useSummary = true } = {},
+) {
   const parts = []
   if (withTime) parts.push(`[${relTime(entry.createdAt, now)}]`)
-  let body = entry.summary || entry.text || ''
-  body = truncateChars(body, 60)
+  // summary 只留第一句；固定层要看全文，否则「好好活着」后面会被砍掉
+  let body = (useSummary ? entry.summary : '') || entry.text || entry.summary || ''
+  body = truncateChars(body, maxLen)
 
   // 可信度低：标出来，别让模型当事实用
   if (typeof entry.beta === 'number' && entry.beta < 0.3) {
@@ -113,7 +117,8 @@ export function renderContext({ pinned = [], hits = [], now, maxChars = CONTEXT_
   for (const p of pinned) {
     const e = p.entry ?? p
     if (!shouldInject(e)) continue
-    pinRows.push(renderEntry(e, { now, withTime: false }))
+    // 固定层是「不主动提就会出事」的：看全文，不按摘要也不按 60 字砍
+    pinRows.push(renderEntry(e, { now, withTime: false, maxLen: 120, useSummary: false }))
   }
 
   const seen = new Set()

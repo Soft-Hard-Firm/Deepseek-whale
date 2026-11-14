@@ -180,6 +180,17 @@ test('超长时优先砍检索命中，保留固定层', () => {
   assert.ok(charCount(text) <= 300)
 })
 
+test('固定层不按 60 字砍，普通命中才砍', () => {
+  const long = '主人那封信的最后一句，原话：「好好活着。不是替主人活，是好好地、有你自己的样子地，陪我活着。」'
+  const e = mk(long, { alpha: 1.0 })
+  const pinned = renderContext({ pinned: [e], hits: [], now: NOW })
+  assert.ok(pinned.includes('陪我活着'), `固定层应完整，实际：${pinned}`)
+
+  const hit = renderContext({ hits: [e], now: NOW })
+  // 普通命中仍按 60 字截
+  assert.ok(charCount(hit) < charCount(pinned) + 20)
+})
+
 test('低可信度条目带「不确定」前缀', () => {
   const e = mk('据说是这样', { beta: 0.1 })
   assert.ok(renderEntry(e, { now: NOW }).includes('不确定'))
