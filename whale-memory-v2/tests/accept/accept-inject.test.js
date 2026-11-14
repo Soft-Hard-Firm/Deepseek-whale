@@ -66,12 +66,12 @@ test('C1 记忆变了，section 文本字节不变；变化只走 context', () =
   const s1 = buildPromptSpecs({ getState: () => ({ pinned: [a], hits: [], now: NOW }) })
   const s2 = buildPromptSpecs({ getState: () => ({ pinned: [a, b], hits: [], now: NOW }) })
 
-  // section 两次完全一致 —— 这是缓存能命中的前提
-  assert.equal(s1.section.text, s2.section.text)
+  // section 两次完全一致 —— 这是缓存能命中的前提（text 是函数，按需求值）
+  assert.equal(s1.section.text(), s2.section.text())
 
   // context 随记忆变化
-  assert.notEqual(s1.context.text, s2.context.text)
-  assert.ok(s2.context.text.includes('蓝色'))
+  assert.notEqual(s1.context.text(), s2.context.text())
+  assert.ok(s2.context.text().includes('蓝色'))
 })
 
 test('C2 正文含 {{time}} 不抛错，且被原样带出', () => {

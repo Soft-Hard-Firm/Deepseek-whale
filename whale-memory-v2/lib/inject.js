@@ -161,18 +161,20 @@ export function renderContext({ pinned = [], hits = [], now, maxChars = CONTEXT_
 export function buildPromptSpecs({ getState }) {
   return {
     section: {
+      // PromptSection 的 name 是必填的
+      name: 'whale-memory',
       order: ORDER.section,
       // 记忆正文里可能出现 {{time}} 这种东西；按模板插值会直接抛错
       interpolate: false,
-      get text() {
-        return renderSection()
-      },
+      text: () => renderSection(),
     },
     context: {
+      name: 'whale-memory',
       order: ORDER.context,
       interpolate: false,
-      get text() {
-        const state = getState()
+      // 契约允许 text 是函数，按需求值，比 getter 正规
+      text: () => {
+        const state = getState() || {}
         return renderContext({ ...state, now: state.now })
       },
     },
