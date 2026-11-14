@@ -69,10 +69,12 @@ npm run test:accept   # 验收用例，必须通过
 
 ## 当前阶段
 
-**T1–T7 已实现。T7 的「装进 DSH 实测」尚未完成** —— 代码已按真实 Cordis 契约写好并用假 ctx 验证，
-但还没装进 profile、没重启验证过。
+**T1–T7 全部完成，并已装进 DSH 实测通过**（工具可调用、注入每轮生效、卸载可回收）。
 
-下一步：装进 profile 跑一次真实调用（会重启 DSH），确认工具可用后再进入 P1 质量阶段。
+插件已进 profile：`dsh.profile.bundles` 里是 `whale-memory-v2`，旧的 `dsh-whale-memory` 只在
+dependencies 保留（方便回滚），不再加载。数据已从旧 SQLite 迁到 `~/.dsh/whale-memory-v2`。
+
+下一步进入 P1 质量阶段：T8 候选晋升、T9 压缩分层、T10 别名、T11 脱敏。
 
 ## 关键约束速记
 
