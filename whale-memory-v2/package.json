@@ -1,0 +1,25 @@
+{
+  "name": "whale-memory-v2",
+  "version": "0.1.0",
+  "description": "DSH 长期记忆插件：全局一份、会淡忘但不丢原件",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "docs",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "test": "node --test tests/unit/store.test.js tests/unit/model.test.js",
+    "test:accept": "node --test tests/accept/accept-store.test.js",
+    "check": "node --check lib/store.js && node --check lib/model.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
