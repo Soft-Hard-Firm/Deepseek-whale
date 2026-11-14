@@ -14,9 +14,9 @@
     "AGENTS.md"
   ],
   "scripts": {
-    "test": "node --test tests/unit/store.test.js tests/unit/model.test.js",
-    "test:accept": "node --test tests/accept/accept-store.test.js",
-    "check": "node --check lib/store.js && node --check lib/model.js"
+    "test": "node --test tests/unit/store.test.js tests/unit/model.test.js tests/unit/tools.test.js",
+    "test:accept": "node --test tests/accept/accept-store.test.js tests/accept/accept-tools.test.js",
+    "check": "node --check lib/store.js && node --check lib/model.js && node --check lib/tools.js"
   },
   "engines": {
     "node": ">=22"

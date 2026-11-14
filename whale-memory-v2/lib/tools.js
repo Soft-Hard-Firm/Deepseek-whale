@@ -1,0 +1,501 @@
+// 工具层：remember / search / update / forget / recall。
+//
+// 口径见 docs/数据契约.md §3、docs/设计文档.md §4。
+// 所有函数同步返回，不抛异常 —— 失败一律 { ok: false, error, text }。
+
+import {
+  normalizeEntry,
+  validateEntry,
+  transition,
+  shouldInject,
+  isSearchable,
+  canTransition,
+  canPin,
+  markUsed,
+  deriveSummary,
+  ModelError,
+  LAYERS,
+  STATUSES,
+  ALPHA_PIN,
+} from './model.js'
+import { StoreError } from './store.js'
+
+/** 会验证失败时抛的自家错误。 */
+export class ToolError extends Error {
+  constructor(code, text) {
+    super(text)
+    this.name = 'ToolError'
+    this.code = code
+  }
+}
+
+/** 去掉标点与空白，用于去重指纹。 */
+export function normalizeForFingerprint(s) {
+  return String(s || '')
+    .replace(/[\s\p{P}\p{S}]/gu, '')
+    .toLowerCase()
+}
+
+/** 去重指纹：规范化后的前 12 个字。 */
+export function fingerprint(text) {
+  return Array.from(normalizeForFingerprint(text)).slice(0, 12).join('')
+}
+
+/** 把一个工具异常转成返回对象。 */
+function toFailure(e) {
+  if (e instanceof ToolError) return { ok: false, error: e.code, text: e.message }
+  if (e instanceof ModelError) return { ok: false, error: e.code, text: e.message }
+  if (e instanceof StoreError) return { ok: false, error: e.code, text: e.message }
+  return { ok: false, error: 'internal', text: String(e && e.message ? e.message : e) }
+}
+
+/** 必填字符串。 */
+function needString(input, key, max = 10000) {
+  const v = input?.[key]
+  if (typeof v !== 'string' || !v.trim()) {
+    throw new ToolError('invalid_param', `${key} 必须是非空字符串`)
+  }
+  if (Array.from(v).length > max) {
+    throw new ToolError('invalid_param', `${key} 超过 ${max} 字`)
+  }
+  return v
+}
+
+function optString(input, key, max = 300) {
+  const v = input?.[key]
+  if (v === undefined || v === null || v === '') return undefined
+  if (typeof v !== 'string') throw new ToolError('invalid_param', `${key} 必须是字符串`)
+  if (Array.from(v).length > max) throw new ToolError('invalid_param', `${key} 超过 ${max} 字`)
+  return v
+}
+
+function optNumber(input, key, lo, hi) {
+  const v = input?.[key]
+  if (v === undefined || v === null) return undefined
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < lo || v > hi) {
+    throw new ToolError('invalid_param', `${key} 必须在 ${lo}~${hi}`)
+  }
+  return v
+}
+
+/** 简单分词：中文按 2 字滑窗，英文数字按整词。给最简检索用。 */
+export function gramsOf(text) {
+  const out = new Set()
+  const s = String(text || '').toLowerCase()
+  for (const seg of s.split(/[\s\p{P}\p{S}]+/u)) {
+    if (!seg) continue
+    const chars = Array.from(seg)
+    if (chars.length === 1) out.add(chars[0])
+    for (let i = 0; i + 1 < chars.length; i++) out.add(chars[i] + chars[i + 1])
+  }
+  return out
+}
+
+/**
+ * 创建工具集。
+ * @param {object} deps
+ * @param {object} deps.store  由 createStore 创建
+ * @param {() => number} deps.clock
+ */
+export function createTools({ store, clock = () => Date.now() }) {
+  const now = () => clock()
+
+  /** 读库并保证 entries 是数组。 */
+  function load() {
+    const data = store.readAll()
+    return data
+  }
+
+  function save(entries) {
+    // 写死前再校验一遍：坏条目不许进库
+    for (const e of entries) validateEntry(e)
+    store.writeAll(entries)
+  }
+
+  // ── remember ───────────────────────────────────────────
+  function remember(input = {}) {
+    try {
+      // 长度限制交给 normalizeEntry —— 这里抢先拦会把 text_too_long 变成 invalid_param
+      const text = needString(input, 'text')
+      const layer = input.layer ?? 'user'
+      if (!LAYERS.includes(layer)) throw new ToolError('invalid_layer', `层名非法：${layer}`)
+
+      const data = load()
+      const entries = [...data.entries]
+
+      // 常驻层满额：拒绝，不挤已有条目
+      const wantPin = input.alpha === ALPHA_PIN
+      if (wantPin && !canPin(entries)) {
+        throw new ToolError(
+          'layer_full',
+          '常驻层已满。这条要么写进普通层，要么明确替换某一条，不能自动挤掉。',
+        )
+      }
+
+      // 同 factKey：旧条取代
+      const factKey = optString(input, 'factKey', 200)
+      if (factKey) {
+        const idx = entries.findIndex(
+          (e) => e.factKey === factKey && e.status === 'active' && e.layer === layer,
+        )
+        if (idx >= 0) {
+          entries[idx] = transition(entries[idx], 'superseded', {
+            now: now(),
+            reason: '同 factKey 的新事实写入',
+          })
+        }
+      }
+
+      // 去重指纹：前 12 字相同 = 同一条，只加 hits
+      const fp = fingerprint(text)
+      if (fp) {
+        const dup = entries.find(
+          (e) =>
+            e.status === 'active' &&
+            e.layer === layer &&
+            fingerprint(e.text) === fp,
+        )
+        if (dup) {
+          const used = markUsed(dup, now())
+          const i = entries.indexOf(dup)
+          entries[i] = used
+          save(entries)
+          return { ok: true, id: used.id, status: used.status, deduped: true }
+        }
+      }
+
+      // 写原文，拿 sourceRef
+      const { sourceRef } = store.appendOriginal(text, {
+        src: input.source ?? 'explicit',
+        layer,
+      })
+
+      const entry = normalizeEntry(
+        {
+          text,
+          layer,
+          project: input.project,
+          status: input.status ?? 'active',
+          alpha: input.alpha,
+          beta: input.beta,
+          evidence: input.evidence,
+          keywords: input.keywords,
+          factKey,
+          supersedes: input.supersedes,
+          source: input.source,
+          sourceRef,
+        },
+        { now: now(), seq: entries.length + 1 },
+      )
+      entries.push(entry)
+      save(entries)
+      return { ok: true, id: entry.id, status: entry.status }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
+  // ── search ─────────────────────────────────────────────
+  function search(input = {}) {
+    try {
+      const data = load()
+      const all = data.entries
+
+      // 无 query：返回索引概览
+      const query = optString(input, 'query', 2000)
+      if (!query) {
+        const byLayer = {}
+        const byStatus = {}
+        let oldest = null
+        let newest = null
+        for (const e of all) {
+          byLayer[e.layer] = (byLayer[e.layer] || 0) + 1
+          byStatus[e.status] = (byStatus[e.status] || 0) + 1
+          if (oldest == null || e.createdAt < oldest) oldest = e.createdAt
+          if (newest == null || e.createdAt > newest) newest = e.createdAt
+        }
+        return {
+          ok: true,
+          index: {
+            total: all.length,
+            byLayer,
+            byStatus,
+            oldestAt: oldest,
+            newestAt: newest,
+            hint: '怎么查：给关键词、给时间范围、或按 id 读原文',
+          },
+        }
+      }
+
+      const limit = Math.min(optNumber(input, 'limit', 1, 100) ?? 8, 100)
+      const layerFilter = optString(input, 'layer', 20)
+      const projectFilter = optString(input, 'project', 100)
+
+      const q = gramsOf(query)
+      if (!q.size) return { ok: true, hits: [] }
+
+      // 最简打分：命中词数 / 查询词数，再按 alpha 和时间加权。
+      // T4 会换成饱和函数 + 稀有度筛选，这里先保证可用。
+      const scored = []
+      for (const e of all) {
+        if (!isSearchable(e)) continue
+        if (layerFilter && e.layer !== layerFilter) continue
+        if (projectFilter && e.project !== projectFilter) continue
+        const hay = gramsOf(`${e.summary} ${e.text} ${(e.keywords || []).join(' ')}`)
+        let hit = 0
+        for (const g of q) if (hay.has(g)) hit++
+        if (!hit) continue
+        const coverage = hit / q.size
+        const recency = Math.max(0, 1 - (now() - e.createdAt) / (30 * 86400000)) * 0.05
+        scored.push({ e, score: coverage + e.alpha * 0.2 + recency, coverage })
+      }
+      scored.sort((a, b) => b.score - a.score || b.e.createdAt - a.e.createdAt)
+
+      const hits = scored.slice(0, limit).map(({ e, coverage }) => ({
+        id: e.id,
+        summary: e.summary,
+        layer: e.layer,
+        project: e.project,
+        status: e.status,
+        alpha: e.alpha,
+        beta: e.beta,
+        at: e.createdAt,
+        coverage: Number(coverage.toFixed(3)),
+      }))
+      return { ok: true, hits }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
+  // ── recall ─────────────────────────────────────────────
+  function recall(input = {}) {
+    try {
+      const id = needString(input, 'id', 200)
+      const data = load()
+      const entry = data.entries.find((e) => e.id === id)
+      if (!entry) throw new ToolError('not_found', `没有这条记忆：${id}`)
+
+      const offset = optNumber(input, 'offset', 0, 1e6) ?? 0
+      const limit = Math.min(optNumber(input, 'limit', 1, 16000) ?? 2000, 16000)
+      const chars = Array.from(entry.text)
+      const slice = chars.slice(offset, offset + limit).join('')
+      const nextOffset = offset + limit < chars.length ? offset + limit : null
+
+      const original = entry.sourceRef ? store.readOriginal(entry.sourceRef) : null
+      return {
+        ok: true,
+        id: entry.id,
+        text: slice,
+        at: entry.createdAt,
+        sourceRef: entry.sourceRef,
+        source: original ? original.text : null,
+        sourceMissing: Boolean(entry.sourceRef) && original === null,
+        offset,
+        nextOffset,
+        totalChars: chars.length,
+      }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
+  // ── update ─────────────────────────────────────────────
+  function update(input = {}) {
+    try {
+      const id = needString(input, 'id', 200)
+      const data = load()
+      const entries = [...data.entries]
+      const idx = entries.findIndex((e) => e.id === id)
+      if (idx < 0) throw new ToolError('not_found', `没有这条记忆：${id}`)
+      const cur = entries[idx]
+
+      let next = { ...cur }
+      if (input.text !== undefined) {
+        const text = needString(input, 'text', 600)
+        next.text = text
+        if (input.summary === undefined) next.summary = deriveSummary(text)
+      }
+      if (input.summary !== undefined) next.summary = String(input.summary).slice(0, 60)
+      if (input.alpha !== undefined) {
+        const a = optNumber(input, 'alpha', 0, 1)
+        if (a === ALPHA_PIN && cur.alpha !== ALPHA_PIN && !canPin(entries.filter((e) => e.id !== id))) {
+          throw new ToolError('layer_full', '常驻层已满，不能再加一条常驻')
+        }
+        next.alpha = a
+      }
+      if (input.beta !== undefined) next.beta = optNumber(input, 'beta', -1, 1)
+      if (input.keywords !== undefined) {
+        if (!Array.isArray(input.keywords)) throw new ToolError('invalid_param', 'keywords 必须是数组')
+        next.keywords = input.keywords.map((k) => String(k).trim()).filter(Boolean).slice(0, 12)
+      }
+      if (input.status !== undefined) {
+        if (!STATUSES.includes(input.status)) {
+          throw new ToolError('invalid_status', `状态非法：${input.status}`)
+        }
+        if (input.status !== cur.status) {
+          if (!canTransition(cur.status, input.status)) {
+            throw new ToolError(
+              'bad_transition',
+              `不允许从 ${cur.status} 转到 ${input.status}`,
+            )
+          }
+          // 只把状态相关字段合进 next —— 不能整体替换，否则前面改过的 text 会丢
+          const t = transition(cur, input.status, {
+            now: now(),
+            by: input.by ?? null,
+            reason: input.reason ?? null,
+          })
+          next.status = t.status
+          for (const k of [
+            'supersededAt',
+            'invalidatedBy',
+            'invalidatedAt',
+            'activationAnchor',
+            'supersedeReason',
+            'invalidateReason',
+            'reactivatedReason',
+          ]) {
+            if (k in t) next[k] = t[k]
+          }
+        }
+      }
+      if (input.project !== undefined) next.project = String(input.project)
+      if (input.layer !== undefined) {
+        if (!LAYERS.includes(input.layer)) throw new ToolError('invalid_layer', `层名非法：${input.layer}`)
+        next.layer = input.layer
+      }
+
+      validateEntry(next)
+      entries[idx] = next
+      save(entries)
+      return { ok: true, id, status: next.status }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
+  function curTextIfEdited(cur, input) {
+    return input.text !== undefined ? input.text : cur.text
+  }
+
+  // ── forget ─────────────────────────────────────────────
+  function forget(input = {}) {
+    try {
+      const id = needString(input, 'id', 200)
+      const reason = optString(input, 'reason', 500)
+      const data = load()
+      const entries = [...data.entries]
+      const idx = entries.findIndex((e) => e.id === id)
+      if (idx < 0) throw new ToolError('not_found', `没有这条记忆：${id}`)
+      const cur = entries[idx]
+
+      // 只改状态，不物理删除
+      const target = cur.status === 'active' || cur.status === 'contested'
+        ? 'invalidated'
+        : 'archived'
+      const next = transition(cur, target, { now: now(), by: 'user', reason: reason ?? null })
+      entries[idx] = next
+      save(entries)
+      return { ok: true, id, status: next.status }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
+  return { remember, search, recall, update, forget }
+}
+
+/**
+ * 工具定义（给宿主注册用）。参数一律是完整 JSON Schema。
+ */
+export const TOOL_SPECS = {
+  remember: {
+    name: 'remember',
+    description:
+      '把一件事记进长期记忆。**一条只装一件事** —— 一个属性、一个约定、一次事件；' +
+      '「她身高一米七、体重五十二、平时侧睡」是三件事，分三次记。' +
+      '只记长期有价值的：用户明确说的重要的话、约定、喜好、状态。' +
+      '不记日常琐事，不记自己做过的事。**记的时候安静地记，不要在回复里说「记下了」** —— 那很像在汇报工作。' +
+      '**时间由系统给，不要写「今天」「昨天」。**',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['text'],
+      properties: {
+        text: { type: 'string', description: '一句话说清。**时间由系统给，不要写「今天」「昨天」**。' },
+        layer: { type: 'string', enum: [...LAYERS], description: 'user=关于用户 / project=项目 / knowledge=可复用经验 / working=临时' },
+        project: { type: 'string' },
+        alpha: { type: 'number', description: '**要不要每轮都挂在用户眼前**：1=不主动提就会出事（雷点、约定、禁忌）；0.5=其余全部' },
+        beta: { type: 'number', description: '**能不能当事实用**：1=用户明说 / 0.7=默认 / 0=玩笑或猜测' },
+        keywords: { type: 'array', items: { type: 'string' } },
+        factKey: { type: 'string', description: '同一条事只留最新时填「对象.方面」，不许写具体值' },
+        supersedes: { type: 'string' },
+      },
+    },
+  },
+  search: {
+    name: 'search',
+    description:
+      '检索记忆。**不带 query 时返回库的索引概览**（有什么、多少条、时间范围）。' +
+      '默认只返回摘要，不返回正文 —— 要正文用 recall。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string' },
+        limit: { type: 'number', description: '默认 8，上限 100。结果会在这一轮之后每一步被重发，别要太多。' },
+        layer: { type: 'string', enum: [...LAYERS] },
+        project: { type: 'string' },
+      },
+    },
+  },
+  recall: {
+    name: 'recall',
+    description: '按 id 读一条记忆的正文和原始出处。想不起来细节时用它翻原文。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        id: { type: 'string' },
+        offset: { type: 'number' },
+        limit: { type: 'number', description: '默认 2000，上限 16000' },
+      },
+    },
+  },
+  update: {
+    name: 'update',
+    description: '改一条已有记忆的内容、重要度、可信度、关键词或状态。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        id: { type: 'string' },
+        text: { type: 'string' },
+        summary: { type: 'string' },
+        alpha: { type: 'number' },
+        beta: { type: 'number' },
+        keywords: { type: 'array', items: { type: 'string' } },
+        project: { type: 'string' },
+        layer: { type: 'string', enum: [...LAYERS] },
+        status: { type: 'string', enum: [...STATUSES] },
+        reason: { type: 'string' },
+      },
+    },
+  },
+  forget: {
+    name: 'forget',
+    description: '让一条记忆退出使用。**只改状态，不物理删除**，之后仍可追溯。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id'],
+      properties: {
+        id: { type: 'string' },
+        reason: { type: 'string' },
+      },
+    },
+  },
+}
