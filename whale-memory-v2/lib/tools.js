@@ -30,6 +30,14 @@ import {
   DEFAULT_LIMIT,
   DATA_NOT_INSTRUCTION,
 } from './digest.js'
+import {
+  groupByDay,
+  pickNextBatch,
+  parseBlocks,
+  dayKey,
+  BLOCK_FORMAT_HELP,
+  MAX_BATCH_MESSAGES,
+} from './ingest.js'
 
 // 检索比注入宽松：门槛低、名额大，且能被翻到的状态都要查得到
 const SEARCH_POLICY = { ...DEFAULT_POLICY, threshold: 0.15, maxItems: 100 }
@@ -447,6 +455,128 @@ export function createTools({ store, clock = () => Date.now() }) {
     return input.text !== undefined ? input.text : cur.text
   }
 
+  // ── ingest / ingest_commit ─────────────────────────────
+  // 拾取流水线：取一批 → 模型交块 → 解析落盘 → 记进度。
+
+  /** 读整理进度。 */
+  function readIngest() {
+    const st = store.readState() || {}
+    return st.ingest && typeof st.ingest === 'object' ? st.ingest : { doneDays: [] }
+  }
+
+  /** 取下一批要整理的会话。 */
+  async function ingest(input = {}) {
+    try {
+      const progress = readIngest()
+      const lastAt = progress.lastIngestedAt ?? 0
+      // 从上一次整理到的地方接着读，别每次重扫全部会话
+      const since = Math.max(Number.isFinite(input.since) ? input.since : 0, lastAt)
+
+      const r = await readUserMessages({
+        since,
+        limit: 100000, // 流水线自己分批，不让 digest 的条数上限截断
+        sessionsDir: input.sessionsDir,
+        maxChars: 2000,
+      })
+      if (!r.ok) {
+        return { ok: false, error: r.error, text: `读不了会话：${r.error}` }
+      }
+
+      const batch = pickNextBatch(r.messages, lastAt)
+
+      if (!batch) {
+        return {
+          ok: true,
+          text:
+            lastAt > 0
+              ? '没有新的会话待整理了。'
+              : '没有待整理的会话（会话目录里没有用户消息）。',
+          done: true,
+        }
+      }
+
+      store.writeState({
+        ingest: { ...progress, currentBatch: { days: batch.days, lastAt: batch.lastAt } },
+      })
+
+      const lines = batch.messages.map((m) => `- [${stamp(m.at)}] ${m.text}`)
+      const head = [
+        `待整理：${batch.days.join('、')}（共 ${batch.messages.length} 条用户消息${batch.truncated ? '，本批有截断' : ''}）`,
+        '',
+        '读完后，挑出**长期有效**的，按下面的格式交回来：',
+        '',
+      ]
+
+      return {
+        ok: true,
+        days: batch.days,
+        count: batch.messages.length,
+        text: [...head, lines.join('\n'), '', '---', '', BLOCK_FORMAT_HELP].join('\n'),
+      }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
+  /** 收模型交的块：解析、去重、落盘、记进度。 */
+  function ingestCommit(input = {}) {
+    try {
+      const block = needString(input, 'block', 200000)
+      const { items, ledger, errors } = parseBlocks(block)
+
+      const result = { added: 0, deduped: 0, failed: 0 }
+      const failures = []
+
+      for (const it of items) {
+        const r = remember(it)
+        if (!r.ok) {
+          result.failed++
+          if (failures.length < 5) failures.push(`${r.error}: ${it.text.slice(0, 30)}`)
+        } else if (r.deduped) {
+          result.deduped++
+        } else {
+          result.added++
+        }
+      }
+
+      // 进度只在块里交了内容时才前进 —— 空块不该把一天标成「整理完」
+      let advanced = null
+      const progress = readIngest()
+      if (result.added + result.deduped > 0) {
+        const cur = progress.currentBatch || {}
+        const ledgerDay = typeof ledger?.['已整理到'] === 'string' ? ledger['已整理到'] : null
+        const newDone = new Set(progress.doneDays || [])
+        for (const d of cur.days || []) newDone.add(d)
+        if (ledgerDay) newDone.add(ledgerDay)
+
+        advanced = [...newDone].sort()
+        store.writeState({
+          ingest: {
+            ...progress,
+            // 按时间戳前进：同一天里有截断时，下一批能接着往下走
+            lastIngestedAt: Math.max(progress.lastIngestedAt ?? 0, cur.lastAt ?? 0),
+            doneDays: advanced,
+            currentBatch: null,
+            lastCommitAt: now(),
+            lastCommitted: result.added + result.deduped,
+          },
+        })
+      }
+
+      const lines = [
+        `解析到 ${items.length} 条：新增 ${result.added}，去重 ${result.deduped}，失败 ${result.failed}。`,
+      ]
+      if (errors.length) lines.push(`块格式问题 ${errors.length} 处：${errors.slice(0, 3).join('；')}`)
+      if (failures.length) lines.push(`失败样例：${failures.join('；')}`)
+      if (advanced) lines.push(`已标记 ${advanced.length} 天为整理完。`)
+      else if (items.length === 0) lines.push('没解析到任何记忆，进度未前进 —— 检查块格式。')
+
+      return { ...result, ok: true, errors: errors.length, text: lines.join('\n') }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
   // ── digest ─────────────────────────────────────────────
   // 把近几天用户说过的话捞出来，交给模型判断哪些值得记。
   // 插件自己不会记东西，这是「补漏」那一半。
@@ -550,7 +680,19 @@ export function createTools({ store, clock = () => Date.now() }) {
     }
   }
 
-  return { remember, search, recall, update, forget, maintain, digest }
+  return {
+    remember,
+    search,
+    recall,
+    update,
+    forget,
+    maintain,
+    digest,
+    ingest,
+    ingestCommit,
+    // TOOL_SPECS 用的 key 是下划线形态，两个名字都留着
+    ingest_commit: ingestCommit,
+  }
 }
 
 /**
@@ -631,6 +773,34 @@ export const TOOL_SPECS = {
         layer: { type: 'string', enum: [...LAYERS] },
         status: { type: 'string', enum: [...STATUSES] },
         reason: { type: 'string' },
+      },
+    },
+  },
+  ingest: {
+    name: 'ingest',
+    description:
+      '批量整理历史会话（第 1 步）：取一批还没整理过的会话内容。' +
+      '读完按工具里给的块格式交回来，调 ingest_commit 落盘。' +
+      '有断点续跑：整理过的天不会再给。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        since: { type: 'number', description: '只看这个时间戳之后的会话（可选）' },
+      },
+    },
+  },
+  ingest_commit: {
+    name: 'ingest_commit',
+    description:
+      '批量整理历史会话（第 2 步）：把按块格式写好的内容交上来，' +
+      '插件会解析、去重、逐条落盘，并把这一批标成已整理。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['block'],
+      properties: {
+        block: { type: 'string', description: '按 ingest 里给的格式写好的完整块' },
       },
     },
   },
