@@ -69,7 +69,7 @@ npm run test:accept   # 验收用例，必须通过
 
 ## 当前阶段
 
-**T1–T7 全部完成，并已装进 DSH 实测通过**（工具可调用、注入每轮生效、卸载可回收）。
+**T1–T15 全部完成，已装进 DSH 并跑在真实使用里**（工具可调用、注入每轮生效、卸载可回收）。
 
 插件已进 profile：`dsh.profile.bundles` 里是 `whale-memory-v2`，旧的 `dsh-whale-memory` 只在
 dependencies 保留（方便回滚），不再加载。数据已从旧 SQLite 迁到 `~/.dsh/whale-memory-v2`。
