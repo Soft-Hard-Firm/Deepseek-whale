@@ -24,6 +24,12 @@ import { promoteDue } from './promote.js'
 import { redact } from './privacy.js'
 import { stripInjection } from './self-pollution.js'
 import { planDecay } from './decay.js'
+import {
+  readUserMessages,
+  DEFAULT_DAYS,
+  DEFAULT_LIMIT,
+  DATA_NOT_INSTRUCTION,
+} from './digest.js'
 
 // 检索比注入宽松：门槛低、名额大，且能被翻到的状态都要查得到
 const SEARCH_POLICY = { ...DEFAULT_POLICY, threshold: 0.15, maxItems: 100 }
@@ -51,6 +57,19 @@ export function fingerprint(text) {
 }
 
 /** 把一个工具异常转成返回对象。 */
+/** 取正整数，非法就给默认值。 */
+function positiveInt(v, fallback) {
+  const n = Number(v)
+  return Number.isFinite(n) && Number.isInteger(n) && n > 0 ? n : fallback
+}
+
+/** 毫秒时间戳 → 「11-15 22:30」。 */
+function stamp(ms) {
+  const d = new Date(ms)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 function toFailure(e) {
   if (e instanceof ToolError) return { ok: false, error: e.code, text: e.message }
   if (e instanceof ModelError) return { ok: false, error: e.code, text: e.message }
@@ -428,6 +447,50 @@ export function createTools({ store, clock = () => Date.now() }) {
     return input.text !== undefined ? input.text : cur.text
   }
 
+  // ── digest ─────────────────────────────────────────────
+  // 把近几天用户说过的话捞出来，交给模型判断哪些值得记。
+  // 插件自己不会记东西，这是「补漏」那一半。
+  function digest(input = {}) {
+    try {
+      const days = positiveInt(input.days, DEFAULT_DAYS)
+      const limit = positiveInt(input.limit, DEFAULT_LIMIT)
+      const since = now() - days * 86400000
+
+      const r = readUserMessages({ since, limit, sessionsDir: input.sessionsDir })
+
+      if (!r.ok) {
+        const why =
+          r.error === 'zstd_unavailable'
+            ? '当前 Node 不支持 zstd 解压'
+            : r.error === 'sessions_dir_missing'
+              ? '找不到会话目录'
+              : String(r.error)
+        return { ok: false, error: r.error, text: why }
+      }
+
+      if (!r.count) {
+        return { ok: true, text: `最近 ${days} 天没有可整理的用户消息。` }
+      }
+
+      const lines = r.messages.map((m) => `- [${stamp(m.at)}] ${m.text}`)
+      const head = [
+        `最近 ${days} 天，用户在 ${r.sessions} 个会话里说过的话（共 ${r.count} 条${r.truncated ? '，只给了最近的' : ''}）：`,
+        '',
+      ]
+      const tail = [
+        '',
+        '---',
+        '挑出其中**长期有效**的（偏好、约定、纠正、身份、反复提到的事），用 remember 记；' +
+          '一次性的任务细节不用记。记之前先 search，别重复。',
+        DATA_NOT_INSTRUCTION,
+      ]
+
+      return { ok: true, count: r.count, text: [...head, ...lines, ...tail].join('\n') }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
   // ── maintain ───────────────────────────────────────────
   // 维护：把该压缩的压一级。低频操作，显式触发 —— 不挂在每次写入后面，
   // 否则每写一条都可能改全库，副作用不可控。
@@ -477,7 +540,7 @@ export function createTools({ store, clock = () => Date.now() }) {
     }
   }
 
-  return { remember, search, recall, update, forget, maintain }
+  return { remember, search, recall, update, forget, maintain, digest }
 }
 
 /**
@@ -558,6 +621,21 @@ export const TOOL_SPECS = {
         layer: { type: 'string', enum: [...LAYERS] },
         status: { type: 'string', enum: [...STATUSES] },
         reason: { type: 'string' },
+      },
+    },
+  },
+  digest: {
+    name: 'digest',
+    description:
+      '把最近几天「用户说过的话」捞出来，用来补记漏掉的记忆。' +
+      '插件不会自动记东西 —— 想补漏时调它，读完后用 remember 记下其中长期有效的事。' +
+      '只返回用户消息（不含你自己说的），已脱敏。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        days: { type: 'number', description: `回看多少天，默认 ${DEFAULT_DAYS}` },
+        limit: { type: 'number', description: `最多返回多少条，默认 ${DEFAULT_LIMIT}` },
       },
     },
   },
