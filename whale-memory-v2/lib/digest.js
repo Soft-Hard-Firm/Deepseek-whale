@@ -44,14 +44,21 @@ function truncateChars(s, n) {
   return chars.length <= n ? chars.join('') : chars.slice(0, n).join('') + '…'
 }
 
-/** 递归找出所有会话文件。 */
+/**
+ * 递归找出所有会话文件。
+ *
+ * 读不到目录时要**记下来**，不能静默返回空 —— 否则「权限被拒」和
+ * 「真的没有会话」在调用方看起来一模一样，会把人骗很久。
+ */
 function findSessionFiles(root) {
   const out = []
+  const errors = []
   const walk = (dir) => {
     let items
     try {
       items = fs.readdirSync(dir, { withFileTypes: true })
-    } catch {
+    } catch (e) {
+      errors.push(`${dir}: ${e?.code ?? e?.message ?? 'unknown'}`)
       return
     }
     for (const e of items) {
@@ -61,7 +68,7 @@ function findSessionFiles(root) {
     }
   }
   walk(root)
-  return out
+  return { files: out, errors }
 }
 
 /**
@@ -136,7 +143,19 @@ export function readUserMessages({
   }
 
   const sinceTime = Number.isFinite(since) ? since : 0
-  const files = findSessionFiles(root)
+  const { files, errors: scanErrors } = findSessionFiles(root)
+  if (!files.length && scanErrors.length) {
+    return {
+      ok: false,
+      error: 'sessions_dir_unreadable',
+      count: 0,
+      sessions: 0,
+      filesFound: 0,
+      root,
+      messages: [],
+      text: `读不了会话目录：${scanErrors[0]}`,
+    }
+  }
 
   // 只读「最近改过」的文件：156MB 全解一遍没必要
   const recent = files.filter((f) => {
@@ -167,6 +186,9 @@ export function readUserMessages({
     ok: true,
     count: all.length,
     sessions: recent.length,
+    filesFound: files.length,
+    root,
+    scanErrors,
     messages: all,
     truncated: overflow,
   }

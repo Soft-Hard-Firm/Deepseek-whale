@@ -469,7 +469,13 @@ export function createTools({ store, clock = () => Date.now() }) {
       }
 
       if (!r.count) {
-        return { ok: true, text: `最近 ${days} 天没有可整理的用户消息。` }
+        // 带上诊断：0 条可能是「真的没说话」，也可能是「一个文件都没扫到」
+        return {
+          ok: true,
+          text:
+            `最近 ${days} 天没有可整理的用户消息。` +
+            `（目录 ${r.root}，找到 ${r.filesFound} 个会话文件，其中 ${r.sessions} 个最近改过）`,
+        }
       }
 
       const lines = r.messages.map((m) => `- [${stamp(m.at)}] ${m.text}`)
