@@ -19,6 +19,7 @@ import {
   registerInjection,
   ORDER,
   CONTEXT_MAX_CHARS,
+  LEVEL_LEN,
   NOT_INSTRUCTION,
   STALE_DAYS,
   DAY,
@@ -189,6 +190,29 @@ test('固定层不按 60 字砍，普通命中才砍', () => {
   const hit = renderContext({ hits: [e], now: NOW })
   // 普通命中仍按 60 字截
   assert.ok(charCount(hit) < charCount(pinned) + 20)
+})
+
+test('压缩等级影响注入长度：压得越深给得越短', () => {
+  const long = '主人说这件事要在周三之前处理完，千万别拖到周五下午再动线上环境，那会儿流量最高，出问题没人兜底，而且回滚窗口只有十分钟'
+  const lv0 = mk(long, { compressionLevel: 0 })
+  const lv2 = mk(long, { compressionLevel: 2 })
+  const lv4 = mk(long, { compressionLevel: 4 })
+
+  const t0 = renderContext({ hits: [lv0], now: NOW })
+  const t2 = renderContext({ hits: [lv2], now: NOW })
+  const t4 = renderContext({ hits: [lv4], now: NOW })
+
+  assert.ok(charCount(t0) > charCount(t2), '2 级该比 0 级短')
+  assert.ok(charCount(t2) > charCount(t4), '4 级该比 2 级更短')
+  assert.equal(LEVEL_LEN[0], 60)
+  assert.equal(LEVEL_LEN[4], 12)
+})
+
+test('固定层不压缩：压到 4 级也照全文给', () => {
+  const long = '主人那封信的最后一句，原话：「好好活着。不是替主人活，是好好地、有你自己的样子地，陪我活着。」'
+  const deep = mk(long, { alpha: 1.0, compressionLevel: 4 })
+  const text = renderContext({ pinned: [deep], hits: [], now: NOW })
+  assert.ok(text.includes('陪我活着'), `固定层不该被压：${text}`)
 })
 
 test('低可信度条目带「不确定」前缀', () => {
