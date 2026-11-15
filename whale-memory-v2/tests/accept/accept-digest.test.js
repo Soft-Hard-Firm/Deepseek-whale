@@ -139,6 +139,32 @@ test('坏文件跳过，不影响同一目录里的好文件', async () => {
   assert.equal(r.count, 1, '坏文件只是跳过，不该让整体失败')
 })
 
+test('用户消息里夹的 system-reminder 被剥掉', async () => {
+  const dirty =
+    '重启了\n\n<system-reminder>\nUpdated instructions from: AGENTS.md\n一大堆系统提示\n</system-reminder>'
+  const root = makeSessions({ messages: [um(dirty, NOW - 1000)] })
+
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  assert.equal(r.count, 1)
+  assert.equal(r.messages[0].text, '重启了', '只留用户真正说的话')
+})
+
+test('整条都是 system-reminder 的被整条丢弃', async () => {
+  const only = '<system-reminder>\n只有系统提示\n</system-reminder>'
+  const root = makeSessions({ messages: [um(only, NOW - 1000)] })
+
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  assert.equal(r.count, 0, '剥完是空的就不该算一条')
+})
+
+test('没闭合的 system-reminder 也剥掉', async () => {
+  const dirty = '真话\n<system-reminder>\n没闭合的系统提示一直写到结尾'
+  const root = makeSessions({ messages: [um(dirty, NOW - 1000)] })
+
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  assert.equal(r.messages[0].text, '真话')
+})
+
 test('非文本块（图片等）不会把消息变成噪音', async () => {
   const row = {
     type: 'user/message',

@@ -76,6 +76,20 @@ function findSessionFiles(root) {
  *
  * `28 B5 2F FD` 是标准帧（little-endian 的 0xFD2FB528）。
  */
+/**
+ * 剥掉夹在用户消息里的系统提示块。
+ *
+ * DSH 会把 `<system-reminder>…</system-reminder>` 追加到用户消息上，
+ * 里面是「文件变了」「当前会话信息」这类东西。它们不是用户说的话，
+ * 又长又是噪音，还可能带提示注入。
+ */
+function stripSystemBlocks(text) {
+  return String(text ?? '')
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+    .replace(/<system-reminder>[\s\S]*$/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+}
+
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 
 /**
@@ -170,7 +184,9 @@ export async function readUserMessagesFromFile(file, { since = 0, stats } = {}) 
     const parts = blocks
       .filter((b) => b?.type === 'text' && typeof b.text === 'string')
       .map((b) => b.text)
-    const joined = parts.join('\n').trim()
+    // 用户消息里常夹着 DSH 附的系统提示块 —— 那不是用户说的话，
+    // 又长又是噪音，还可能带提示注入。剥掉再判断。
+    const joined = stripSystemBlocks(parts.join('\n')).trim()
     if (!joined) continue
 
     out.push({ at, text: joined })
