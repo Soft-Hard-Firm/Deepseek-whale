@@ -15,7 +15,7 @@
 
 import { redact } from './privacy.js'
 import { stripInjection } from './self-pollution.js'
-import { LAYERS } from './model.js'
+import { LAYERS, parseTime } from './model.js'
 import { LEVEL_TO_LAYER } from './migrate.js'
 
 /** 一个块头。 */
@@ -144,6 +144,8 @@ export function parseBlocks(text) {
       text: clean,
       layer: header.layer,
       project: header.project || '全局',
+      // 块头可以写 at=2026-10-17，指定「这件事什么时候发生的」
+      createdAt: parseTime(header.at),
       alpha: header.alpha,
       beta: header.beta,
       status: header.status,
@@ -210,7 +212,7 @@ export function pickNextBatch(messages, lastAt = 0) {
 /** 块格式说明：给模型看的，和 parseBlocks 必须一字不差地对应。 */
 export const BLOCK_FORMAT_HELP = `交回格式（必须严格照抄，插件按这个解析）：
 
-<<<记忆 layer=<user|project|knowledge|working> project=<项目名> alpha=<0~1> beta=<0~1>>>
+<<<记忆 layer=<user|project|knowledge|working> project=<项目名> alpha=<0~1> beta=<0~1> at=<这件事发生的日期>>>
 - 一条记忆，只讲一件事
 - 又一条
 <<<账本>>>
@@ -220,6 +222,8 @@ export const BLOCK_FORMAT_HELP = `交回格式（必须严格照抄，插件按�
 - 一个 <<<记忆>>> 头管它下面的所有 "- " 行，它们共享同一层和项目
 - 不同层或不同项目就再写一个头
 - layer 必须是 user / project / knowledge / working 之一
+- **at 要写这件事实际发生的日期**（不是今天）。这批会话是哪天的就写哪天的；
+  写对了，「明天去杭州」才会被记成那天的事，而不是整理当天的事
 - **过了一个星期再看，这条还有用吗？** 答不上就不收
 - 一次性的任务细节（今天做什么、这个报错是什么）不要收
 - 收完记得写 <<<账本>>>，否则进度不会前进`

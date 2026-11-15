@@ -98,7 +98,22 @@ export function normalizeEntry(input, { now, seq = 0 } = {}) {
   if (input == null || typeof input !== 'object') {
     throw new ModelError('bad_entry', '条目必须是对象')
   }
-  const t = isFiniteNumber(now) ? now : Date.now()
+  const nowMs = isFiniteNumber(now) ? now : Date.now()
+
+  // 时间锚点：这件事**什么时候发生的**，不是「什么时候写进来的」。
+  // 流水线整理历史会话时必须给，否则「用户那天说明天去杭州」会被记成写入当天的事。
+  let t = nowMs
+  if (input.createdAt !== undefined && input.createdAt !== null) {
+    if (!isFiniteNumber(input.createdAt)) {
+      throw new ModelError('invalid_time', 'createdAt 必须是毫秒时间戳')
+    }
+    if (input.createdAt < 0) throw new ModelError('invalid_time', 'createdAt 不能是负数')
+    // 允许一点时钟偏差，但明显在未来就是调用方搞错了
+    if (input.createdAt > nowMs + 24 * 3600 * 1000) {
+      throw new ModelError('invalid_time', 'createdAt 在未来，可能是把秒当成了毫秒')
+    }
+    t = input.createdAt
+  }
 
   const text = String(input.text ?? '')
   if (!text.trim()) throw new ModelError('empty_text', '正文不能为空')
@@ -227,6 +242,28 @@ export function transition(entry, to, { now, by = null, reason = null } = {}) {
     if (reason) next.reactivatedReason = reason
   }
   return next
+}
+
+/**
+ * 把「时间」的各种写法归一成毫秒时间戳。
+ *
+ * 接受：毫秒数字、ISO 字符串、`YYYY-MM-DD`。解析不了就返回 undefined（当没给）。
+ * 纯日期按**本地**当天 0 点，因为写 `at=2026-10-17` 的人想的是那天，不是 UTC 那天。
+ */
+export function parseTime(v) {
+  if (v === undefined || v === null || v === '') return undefined
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined
+  const s = String(v).trim()
+  if (/^\d+$/.test(s)) {
+    const n = Number(s)
+    return Number.isFinite(n) ? n : undefined
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split('-').map(Number)
+    return new Date(y, m - 1, d).getTime()
+  }
+  const t = Date.parse(s)
+  return Number.isFinite(t) ? t : undefined
 }
 
 /** 记一次被用到：hits+1、lastHit、encodings 追加。 */

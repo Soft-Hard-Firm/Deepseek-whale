@@ -21,6 +21,7 @@ import {
 import { StoreError } from './store.js'
 import { select, DEFAULT_POLICY } from './retrieve.js'
 import { promoteDue } from './promote.js'
+import { parseTime } from './model.js'
 import { redact } from './privacy.js'
 import { stripInjection } from './self-pollution.js'
 import { planDecay } from './decay.js'
@@ -259,6 +260,8 @@ export function createTools({ store, clock = () => Date.now() }) {
           factKey,
           supersedes: input.supersedes,
           quote,
+          // 这件事什么时候发生的；不给就是写入时刻
+          createdAt: parseTime(input.at),
           source: input.source,
           sourceRef,
         },
@@ -527,8 +530,13 @@ export function createTools({ store, clock = () => Date.now() }) {
       const result = { added: 0, deduped: 0, failed: 0 }
       const failures = []
 
+      // 进度要在循环前读：循环里要用它的 currentBatch 兜底时间
+      const progress = readIngest()
+      // 没给 at 的，用这批会话的时间兜底 —— 至少别记成「整理当天」
+      const fallbackAt = progress.currentBatch?.lastAt ?? undefined
+
       for (const it of items) {
-        const r = remember(it)
+        const r = remember({ ...it, at: it.createdAt ?? fallbackAt })
         if (!r.ok) {
           result.failed++
           if (failures.length < 5) failures.push(`${r.error}: ${it.text.slice(0, 30)}`)
@@ -541,7 +549,6 @@ export function createTools({ store, clock = () => Date.now() }) {
 
       // 进度只在块里交了内容时才前进 —— 空块不该把一天标成「整理完」
       let advanced = null
-      const progress = readIngest()
       if (result.added + result.deduped > 0) {
         const cur = progress.currentBatch || {}
         const ledgerDay = typeof ledger?.['已整理到'] === 'string' ? ledger['已整理到'] : null
@@ -721,6 +728,12 @@ export const TOOL_SPECS = {
         factKey: { type: 'string', description: '同一条事只留最新时填「对象.方面」，不许写具体值' },
         quote: { type: 'string', description: '要记的「原话」片段。**给了它就必须给 quoteSource**，否则拒收——防止把没说过的话当引用' },
         quoteSource: { type: 'string', description: '原话出自的原文。quote 必须是它的子串，否则拒收' },
+        at: {
+          type: 'string',
+          description:
+            '这件事**什么时候发生的**（不是什么时候写的）。ISO 时间或 YYYY-MM-DD。' +
+            '整理历史会话、补记旧事时必须给，否则时间线会错位。',
+        },
         supersedes: { type: 'string' },
       },
     },
