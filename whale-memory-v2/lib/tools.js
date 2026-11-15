@@ -474,7 +474,10 @@ export function createTools({ store, clock = () => Date.now() }) {
           ok: true,
           text:
             `最近 ${days} 天没有可整理的用户消息。` +
-            `（目录 ${r.root}，找到 ${r.filesFound} 个会话文件，其中 ${r.sessions} 个最近改过）`,
+            `（目录 ${r.root}，${r.filesFound} 个文件 / ${r.sessions} 个最近改过；` +
+            `解压失败 ${r.stats?.failed?.length ?? 0} 个，总行数 ${r.stats?.lines ?? 0}，` +
+            `坏 JSON ${r.stats?.badJson ?? 0}，类型 ${JSON.stringify(r.stats?.types ?? {})}）` +
+            (r.stats?.failed?.length ? ` 首个失败：${r.stats.failed[0]}` : ''),
         }
       }
 

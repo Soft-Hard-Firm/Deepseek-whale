@@ -76,13 +76,16 @@ function findSessionFiles(root) {
  *
  * @returns {Array<{at:number, text:string}>}
  */
-export function readUserMessagesFromFile(file, { since = 0 } = {}) {
+export function readUserMessagesFromFile(file, { since = 0, stats } = {}) {
   let text
   try {
     const buf = fs.readFileSync(file)
     // Node 的 zstd 能处理多帧（DSH 的会话文件就是多帧追加的）
     text = zlib.zstdDecompressSync(buf).toString('utf8')
-  } catch {
+  } catch (e) {
+    if (stats) {
+      stats.failed.push(`${path.basename(path.dirname(file))}: ${e?.code ?? e?.message ?? '?'}`)
+    }
     // 坏文件跳过，不影响其它会话
     return []
   }
@@ -90,12 +93,15 @@ export function readUserMessagesFromFile(file, { since = 0 } = {}) {
   const out = []
   for (const line of text.split('\n')) {
     if (!line) continue
+    if (stats) stats.lines++
     let row
     try {
       row = JSON.parse(line)
     } catch {
+      if (stats) stats.badJson++
       continue
     }
+    if (stats) stats.types[row?.type] = (stats.types[row?.type] || 0) + 1
     if (row?.type !== 'user/message') continue
 
     const at = row.time || 0
@@ -166,9 +172,10 @@ export function readUserMessages({
     }
   })
 
+  const stats = { lines: 0, badJson: 0, types: {}, failed: [] }
   let all = []
   for (const f of recent) {
-    const msgs = readUserMessagesFromFile(f, { since: sinceTime })
+    const msgs = readUserMessagesFromFile(f, { since: sinceTime, stats })
     for (const m of msgs) {
       const { text } = redact(m.text)
       all.push({ at: m.at, text: truncateChars(text, maxChars) })
@@ -189,6 +196,7 @@ export function readUserMessages({
     filesFound: files.length,
     root,
     scanErrors,
+    stats,
     messages: all,
     truncated: overflow,
   }
