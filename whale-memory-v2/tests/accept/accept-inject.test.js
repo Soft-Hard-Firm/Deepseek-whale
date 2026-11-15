@@ -205,7 +205,26 @@ test('压缩等级影响注入长度：压得越深给得越短', () => {
   assert.ok(charCount(t0) > charCount(t2), '2 级该比 0 级短')
   assert.ok(charCount(t2) > charCount(t4), '4 级该比 2 级更短')
   assert.equal(LEVEL_LEN[0], 60)
-  assert.equal(LEVEL_LEN[4], 12)
+  assert.equal(LEVEL_LEN[4], 8)
+})
+
+test('压缩对「真实长度」的条目也有效（不只是长文本）', () => {
+  // 记忆摘要常见 20~40 字。取一个「长到有压缩空间」的真实样本。
+  // 注意：只有 20 字出头的短条目在 0→1 级压不动 —— 它本来就不占上下文，
+  // 这是可接受的，压缩真正该作用的是长条目。
+  const real = '主人说这件事周三之前要处理完，千万别拖到周五下午再动线上环境，那会儿流量最高'
+  assert.ok(charCount(real) >= 30, `样本长度 ${charCount(real)}，需要长到有压缩空间`)
+
+  const mkLevel = (lv) => mk(real, { compressionLevel: lv })
+  const lens = [0, 1, 2, 3, 4].map(
+    (lv) => charCount(renderContext({ hits: [mkLevel(lv)], now: NOW })),
+  )
+
+  for (let i = 1; i < lens.length; i++) {
+    assert.ok(lens[i] <= lens[i - 1], `等级 ${i} 不该比 ${i - 1} 长：${lens}`)
+  }
+  assert.ok(lens[1] < lens[0], `0→1 级必须真的变短，实际 ${lens}`)
+  assert.ok(lens[4] < lens[1], `1→4 级必须继续变短，实际 ${lens}`)
 })
 
 test('固定层不压缩：压到 4 级也照全文给', () => {

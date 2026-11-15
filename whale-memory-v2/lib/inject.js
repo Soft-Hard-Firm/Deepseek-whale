@@ -35,9 +35,12 @@ export const NOT_INSTRUCTION =
  * 压缩等级 → 注入时每条给多少字。
  *
  * level 0 是原文、1 是摘要、2 是一句话、3 更短、4 只剩个目录行的感觉。
+ *
+ * 这张表要够激进：记忆摘要本身通常只有 20~40 字，如果每级的差距小于这个量级，
+ * 压缩就只是改了个数字、注入内容一个字没少。
  * 固定层不走这张表（显式传 maxLen），因为固定层是「不主动提就会出事」的，不能压。
  */
-export const LEVEL_LEN = Object.freeze([60, 42, 28, 18, 12])
+export const LEVEL_LEN = Object.freeze([60, 32, 20, 12, 8])
 
 /** 会随时间失效的内容：价格、版本、日期、名额这类。 */
 const TIME_SENSITIVE_RE =
