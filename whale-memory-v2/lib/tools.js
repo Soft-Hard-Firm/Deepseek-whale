@@ -476,7 +476,8 @@ export function createTools({ store, clock = () => Date.now() }) {
             `最近 ${days} 天没有可整理的用户消息。` +
             `（目录 ${r.root}，${r.filesFound} 个文件 / ${r.sessions} 个最近改过；` +
             `解压失败 ${r.stats?.failed?.length ?? 0} 个，总行数 ${r.stats?.lines ?? 0}，` +
-            `坏 JSON ${r.stats?.badJson ?? 0}，类型 ${JSON.stringify(r.stats?.types ?? {})}）` +
+            `坏 JSON ${r.stats?.badJson ?? 0}，类型 ${JSON.stringify(r.stats?.types ?? {})}；` +
+            `pid ${process.pid} 运行 ${Math.round(process.uptime())}s 模块 ${import.meta.url}）` +
             (r.stats?.failed?.length ? ` 首个失败：${r.stats.failed[0]}` : ''),
         }
       }
