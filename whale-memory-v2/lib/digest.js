@@ -72,23 +72,61 @@ function findSessionFiles(root) {
 }
 
 /**
+ * zstd 帧头魔数。
+ *
+ * `28 B5 2F FD` 是标准帧（little-endian 的 0xFD2FB528）。
+ */
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
+
+/**
  * 解压一个 zstd 文件，**必须解全部帧**。
  *
- * 坑：`zstdDecompressSync` 对多帧的行为随 Node 版本变 —— 有的版本解全部，
- * 有的只解第一帧。DSH 里的会话文件是「每轮追加一帧」，只解第一帧的话
- * 每个文件只剩一行 `session` 元信息，后面的对话全丢。
+ * 坑：`zstdDecompressSync` 对多帧的行为**随 Node 版本变**。
+ * Node 24 能一次解全部帧；DSH 内嵌的 Node 只解第一帧，而且流式解压也一样。
  *
- * 用流式解压，它对多帧是可靠的。
+ * DSH 的会话文件是「每轮追加一帧」，只解第一帧的话每个文件只剩一行
+ * `session` 元信息，后面的对话全丢 —— 而且**不会报错**，看起来就像「没有消息」。
+ *
+ * 所以这里不依赖运行时的多帧行为：自己按魔数切帧，逐帧解压再拼。
  */
-function decompressZstd(buf) {
-  return new Promise((resolve, reject) => {
-    const chunks = []
-    const stream = zlib.createZstdDecompress()
-    stream.on('data', (c) => chunks.push(c))
-    stream.on('end', () => resolve(Buffer.concat(chunks)))
-    stream.on('error', reject)
-    stream.end(buf)
-  })
+export function decompressZstdAll(buf) {
+  const first = buf.indexOf(ZSTD_MAGIC, 0)
+  if (first < 0) {
+    // 不像 zstd，交给运行时去报错
+    return zlib.zstdDecompressSync(buf)
+  }
+
+  const parts = []
+  let pos = first
+
+  while (pos >= 0 && pos < buf.length) {
+    const start = buf.indexOf(ZSTD_MAGIC, pos)
+    if (start < 0) break
+
+    const nextMagic = buf.indexOf(ZSTD_MAGIC, start + ZSTD_MAGIC.length)
+    let end = nextMagic < 0 ? buf.length : nextMagic
+
+    let decoded = null
+    // 从「下一帧起点」往回试：帧内部若恰好出现魔数字节，这一步会纠正回来
+    let tryEnd = end
+    while (tryEnd > start + ZSTD_MAGIC.length) {
+      try {
+        decoded = zlib.zstdDecompressSync(buf.subarray(start, tryEnd))
+        end = tryEnd
+        break
+      } catch {
+        const prev = buf.lastIndexOf(ZSTD_MAGIC, tryEnd - 1)
+        if (prev <= start) break
+        tryEnd = prev
+      }
+    }
+
+    if (!decoded) break
+    parts.push(decoded)
+    pos = end
+  }
+
+  return Buffer.concat(parts)
 }
 
 /**
@@ -100,7 +138,7 @@ export async function readUserMessagesFromFile(file, { since = 0, stats } = {}) 
   let text
   try {
     const buf = await fs.promises.readFile(file)
-    text = (await decompressZstd(buf)).toString('utf8')
+    text = decompressZstdAll(buf).toString('utf8')
   } catch (e) {
     if (stats) {
       stats.failed.push(`${path.basename(path.dirname(file))}: ${e?.code ?? e?.message ?? '?'}`)
