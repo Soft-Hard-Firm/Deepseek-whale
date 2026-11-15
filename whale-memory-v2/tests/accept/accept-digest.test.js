@@ -165,6 +165,32 @@ test('没闭合的 system-reminder 也剥掉', async () => {
   assert.equal(r.messages[0].text, '真话')
 })
 
+test('环境注入行被剥掉，只留用户说的话', async () => {
+  const dirty = [
+    'Time sampled while preparing turn 60, step 6: 2026-11-15T23:27:37+08:00[Asia/Shanghai]',
+    'Browser time zone for this request: Asia/Shanghai.',
+    'Elapsed since the preceding step context: unavailable.',
+    '',
+    'A，',
+  ].join('\n')
+  const root = makeSessions({ messages: [um(dirty, NOW - 1000)] })
+
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  assert.equal(r.count, 1)
+  assert.equal(r.messages[0].text, 'A，', '环境行不该混进来')
+})
+
+test('整条只有环境信息时整条丢弃', async () => {
+  const only = [
+    'Time sampled while preparing turn 1, step 1: 2026-11-15T10:00:00+08:00[Asia/Shanghai]',
+    'Browser time zone for this request: Asia/Shanghai.',
+  ].join('\n')
+  const root = makeSessions({ messages: [um(only, NOW - 1000)] })
+
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  assert.equal(r.count, 0)
+})
+
 test('非文本块（图片等）不会把消息变成噪音', async () => {
   const row = {
     type: 'user/message',
