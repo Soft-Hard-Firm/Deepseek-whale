@@ -176,6 +176,22 @@ export function similarity(aSet, bSet) {
  * 选条。
  * @returns {{ picked: Array<{entry, C, P, A}>, rejected: Array<{entry, reason}> }}
  */
+/**
+ * 这条在 `at` 那一刻**是否有效**。
+ *
+ * 「有效」= 那时已经产生、且那时还没被取代 / 作废。
+ *
+ * 只认有时间的失效标记。`archived` 没有时间戳，一律当成一直有效 ——
+ * 归档是「不再注入」，不是「当时就不成立」。
+ */
+export function effectiveAt(entry, at) {
+  if (!entry || !Number.isFinite(at)) return false
+  if (!Number.isFinite(entry.createdAt) || entry.createdAt > at) return false
+  if (Number.isFinite(entry.supersededAt) && entry.supersededAt <= at) return false
+  if (Number.isFinite(entry.invalidatedAt) && entry.invalidatedAt <= at) return false
+  return true
+}
+
 export function select(
   entries,
   query,
@@ -187,11 +203,20 @@ export function select(
     // 注入只看 active/contested；检索还要能翻到 superseded / archived（PRD A4/A6）
     statuses = ['active', 'contested'],
     applyQuota = true,
+    // 给了 asOf 就是「查那一刻有效的事实」，不看现在的状态
+    asOf,
   } = {},
 ) {
   const t = Number.isFinite(now) ? now : Date.now()
+  // 时刻查询时，评分的时间基准也用那一刻：衰减该按「站在那时看」
+  const scoreAt = Number.isFinite(asOf) ? asOf : t
+
   const pool = entries.filter((e) => {
-    if (!statuses.includes(e.status)) return false
+    if (Number.isFinite(asOf)) {
+      if (!effectiveAt(e, asOf)) return false
+    } else if (!statuses.includes(e.status)) {
+      return false
+    }
     if (layer && e.layer !== layer) return false
     if (project && e.project !== project) return false
     return true
@@ -205,7 +230,7 @@ export function select(
   const rejected = []
   const candidates = []
   for (const e of pool) {
-    const sc = score(e, terms, df, total, t, policy)
+    const sc = score(e, terms, df, total, scoreAt, policy)
     if (sc.C <= 0) {
       rejected.push({ entry: e, reason: 'no_overlap' })
       continue

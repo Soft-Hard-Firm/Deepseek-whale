@@ -318,9 +318,13 @@ export function createTools({ store, clock = () => Date.now() }) {
       const layerFilter = optString(input, 'layer', 20)
       const projectFilter = optString(input, 'project', 100)
 
+      // 给了 asOf 就是「查那一刻有效的事实」——时光机
+      const asOf = parseTime(input.asOf)
+
       // 交给检索层：饱和评分 + 两层稀有度 + 门槛卡 C + 去重
       const { picked } = select(all, query, {
         now: now(),
+        asOf,
         policy: SEARCH_POLICY,
         layer: layerFilter,
         project: projectFilter,
@@ -341,7 +345,12 @@ export function createTools({ store, clock = () => Date.now() }) {
         P: Number(P.toFixed(3)),
         ...(nearMiss ? { nearMiss: true } : {}),
       }))
-      return { ok: true, hits }
+      return {
+        ok: true,
+        hits,
+        // 时刻查询把锚点回给调用方，免得它以为这是「现在」的结果
+        ...(Number.isFinite(asOf) ? { asOf, asOfText: new Date(asOf).toISOString() } : {}),
+      }
     } catch (e) {
       return toFailure(e)
     }
@@ -751,6 +760,13 @@ export const TOOL_SPECS = {
         limit: { type: 'number', description: '默认 8，上限 100。结果会在这一轮之后每一步被重发，别要太多。' },
         layer: { type: 'string', enum: [...LAYERS] },
         project: { type: 'string' },
+        asOf: {
+          type: 'string',
+          description:
+            '**时光机**：只查这一刻有效的事实（ISO 或 YYYY-MM-DD）。' +
+            '不给就是「现在」。用来回答「上周定的是什么方案」这类问题——' +
+            '即使后来被改了，也能看到当时为真的版本。',
+        },
       },
     },
   },
