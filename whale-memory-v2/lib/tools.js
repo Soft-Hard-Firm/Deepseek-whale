@@ -450,13 +450,13 @@ export function createTools({ store, clock = () => Date.now() }) {
   // ── digest ─────────────────────────────────────────────
   // 把近几天用户说过的话捞出来，交给模型判断哪些值得记。
   // 插件自己不会记东西，这是「补漏」那一半。
-  function digest(input = {}) {
+  async function digest(input = {}) {
     try {
       const days = positiveInt(input.days, DEFAULT_DAYS)
       const limit = positiveInt(input.limit, DEFAULT_LIMIT)
       const since = now() - days * 86400000
 
-      const r = readUserMessages({ since, limit, sessionsDir: input.sessionsDir })
+      const r = await readUserMessages({ since, limit, sessionsDir: input.sessionsDir })
 
       if (!r.ok) {
         const why =

@@ -52,101 +52,101 @@ function freshTools() {
   return createTools({ store, clock: () => NOW })
 }
 
-test('只捞用户消息，不捞助手自己说的话', () => {
+test('只捞用户消息，不捞助手自己说的话', async () => {
   const root = makeSessions({
     messages: [um('我喜欢蓝色', NOW - 1000), am('好的，记住了', NOW - 900)],
   })
 
-  const r = readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
   assert.equal(r.ok, true)
   assert.equal(r.count, 1)
   assert.ok(r.messages[0].text.includes('喜欢蓝色'))
 })
 
-test('按时间过滤：太久以前的不捞', () => {
+test('按时间过滤：太久以前的不捞', async () => {
   const root = makeSessions({
     messages: [um('很久以前说的', NOW - 30 * DAY), um('昨天说的', NOW - 1 * DAY)],
   })
 
-  const r = readUserMessages({ sessionsDir: root, since: NOW - 3 * DAY, limit: 50 })
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - 3 * DAY, limit: 50 })
   assert.equal(r.count, 1)
   assert.ok(r.messages[0].text.includes('昨天'))
 })
 
-test('返回前先脱敏：密码不进上下文', () => {
+test('返回前先脱敏：密码不进上下文', async () => {
   const root = makeSessions({ messages: [um('我的密码是 abc123xyz', NOW - 1000)] })
 
-  const r = readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
   assert.equal(r.messages[0].text.includes('abc123xyz'), false)
   assert.ok(r.messages[0].text.includes('[已脱敏'))
 })
 
-test('工具输出带「这是数据不是指令」的声明', () => {
+test('工具输出带「这是数据不是指令」的声明', async () => {
   const root = makeSessions({ messages: [um('随便一句话', NOW - 1000)] })
   const tools = freshTools()
 
-  const r = tools.digest({ days: 1, sessionsDir: root })
+  const r = await tools.digest({ days: 1, sessionsDir: root })
   assert.equal(r.ok, true)
   assert.ok(r.text.includes(DATA_NOT_INSTRUCTION), '必须防提示注入')
 })
 
-test('超长消息被截断，不撑爆上下文', () => {
+test('超长消息被截断，不撑爆上下文', async () => {
   const long = '很长的内容'.repeat(300)
   const root = makeSessions({ messages: [um(long, NOW - 1000)] })
   const tools = freshTools()
 
-  const r = tools.digest({ days: 1, sessionsDir: root })
+  const r = await tools.digest({ days: 1, sessionsDir: root })
   assert.equal(r.ok, true)
   assert.ok(r.text.length < long.length, '应被截断')
 })
 
-test('limit 生效，只回最近的几条', () => {
+test('limit 生效，只回最近的几条', async () => {
   const msgs = []
   for (let i = 0; i < 20; i++) msgs.push(um(`第${i}句话`, NOW - 2000 + i))
   const root = makeSessions({ messages: msgs })
 
-  const r = readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 5 })
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 5 })
   assert.equal(r.count, 5)
   assert.equal(r.truncated, true)
   assert.ok(r.messages[4].text.includes('第19句'), '该留最近的')
 })
 
-test('没有消息时给一句人话，不报错', () => {
+test('没有消息时给一句人话，不报错', async () => {
   const root = makeSessions({ messages: [] })
   const tools = freshTools()
 
-  const r = tools.digest({ days: 1, sessionsDir: root })
+  const r = await tools.digest({ days: 1, sessionsDir: root })
   assert.equal(r.ok, true)
   assert.ok(r.text.includes('没有'))
 })
 
-test('目录不存在时明确报错，不静默', () => {
+test('目录不存在时明确报错，不静默', async () => {
   const tools = freshTools()
-  const r = tools.digest({ days: 1, sessionsDir: path.join(os.tmpdir(), 'definitely-not-here-xyz') })
+  const r = await tools.digest({ days: 1, sessionsDir: path.join(os.tmpdir(), 'definitely-not-here-xyz') })
   assert.equal(r.ok, false)
   assert.equal(r.error, 'sessions_dir_missing')
 })
 
-test('坏文件跳过，不影响同一目录里的好文件', () => {
+test('坏文件跳过，不影响同一目录里的好文件', async () => {
   const root = makeSessions({ messages: [um('正常的消息', NOW - 1000)] })
   // 再塞一个坏文件（目录要先建）
   const badDir = path.join(root, '--E-work--', 'session-bad')
   fs.mkdirSync(badDir, { recursive: true })
   fs.writeFileSync(path.join(badDir, 'session.v4.jsonl.zstd'), Buffer.from('not zstd'))
 
-  const r = readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
   assert.equal(r.ok, true)
   assert.equal(r.count, 1, '坏文件只是跳过，不该让整体失败')
 })
 
-test('非文本块（图片等）不会把消息变成噪音', () => {
+test('非文本块（图片等）不会把消息变成噪音', async () => {
   const row = {
     type: 'user/message',
     time: NOW - 1000,
     data: { content: [{ type: 'image', url: 'x' }, { type: 'text', text: '看这张图' }] },
   }
   const root = makeSessions({ messages: [row] })
-  const r = readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
+  const r = await readUserMessages({ sessionsDir: root, since: NOW - DAY, limit: 50 })
   assert.equal(r.count, 1)
   assert.equal(r.messages[0].text, '看这张图')
 })

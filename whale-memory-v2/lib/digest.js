@@ -72,16 +72,35 @@ function findSessionFiles(root) {
 }
 
 /**
+ * 解压一个 zstd 文件，**必须解全部帧**。
+ *
+ * 坑：`zstdDecompressSync` 对多帧的行为随 Node 版本变 —— 有的版本解全部，
+ * 有的只解第一帧。DSH 里的会话文件是「每轮追加一帧」，只解第一帧的话
+ * 每个文件只剩一行 `session` 元信息，后面的对话全丢。
+ *
+ * 用流式解压，它对多帧是可靠的。
+ */
+function decompressZstd(buf) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    const stream = zlib.createZstdDecompress()
+    stream.on('data', (c) => chunks.push(c))
+    stream.on('end', () => resolve(Buffer.concat(chunks)))
+    stream.on('error', reject)
+    stream.end(buf)
+  })
+}
+
+/**
  * 读一个会话文件里的用户消息。
  *
- * @returns {Array<{at:number, text:string}>}
+ * @returns {Promise<Array<{at:number, text:string}>>}
  */
-export function readUserMessagesFromFile(file, { since = 0, stats } = {}) {
+export async function readUserMessagesFromFile(file, { since = 0, stats } = {}) {
   let text
   try {
-    const buf = fs.readFileSync(file)
-    // Node 的 zstd 能处理多帧（DSH 的会话文件就是多帧追加的）
-    text = zlib.zstdDecompressSync(buf).toString('utf8')
+    const buf = await fs.promises.readFile(file)
+    text = (await decompressZstd(buf)).toString('utf8')
   } catch (e) {
     if (stats) {
       stats.failed.push(`${path.basename(path.dirname(file))}: ${e?.code ?? e?.message ?? '?'}`)
@@ -126,7 +145,7 @@ export function readUserMessagesFromFile(file, { since = 0, stats } = {}) {
  *
  * @returns {{ ok:boolean, count:number, sessions:number, messages:Array<{at,text}>, error?:string }}
  */
-export function readUserMessages({
+export async function readUserMessages({
   sessionsDir,
   since,
   limit = DEFAULT_LIMIT,
@@ -175,7 +194,7 @@ export function readUserMessages({
   const stats = { lines: 0, badJson: 0, types: {}, failed: [] }
   let all = []
   for (const f of recent) {
-    const msgs = readUserMessagesFromFile(f, { since: sinceTime, stats })
+    const msgs = await readUserMessagesFromFile(f, { since: sinceTime, stats })
     for (const m of msgs) {
       const { text } = redact(m.text)
       all.push({ at: m.at, text: truncateChars(text, maxChars) })
