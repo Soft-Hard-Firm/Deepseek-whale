@@ -20,6 +20,9 @@ import {
 } from './model.js'
 import { StoreError } from './store.js'
 import { select, DEFAULT_POLICY } from './retrieve.js'
+import { promoteDue } from './promote.js'
+import { redact } from './privacy.js'
+import { stripInjection } from './self-pollution.js'
 
 // 检索比注入宽松：门槛低、名额大，且能被翻到的状态都要查得到
 const SEARCH_POLICY = { ...DEFAULT_POLICY, threshold: 0.15, maxItems: 100 }
@@ -117,11 +120,25 @@ export function createTools({ store, clock = () => Date.now() }) {
     store.writeAll(entries)
   }
 
+  /** 写盘前顺手把够格的候选提上来，并把晋升结果带回去。 */
+  function saveWithPromotion(entries) {
+    const { entries: next, promoted } = promoteDue(entries, now())
+    save(next)
+    return { entries: next, promoted }
+  }
+
   // ── remember ───────────────────────────────────────────
   function remember(input = {}) {
     try {
       // 长度限制交给 normalizeEntry —— 这里抢先拦会把 text_too_long 变成 invalid_param
-      const text = needString(input, 'text')
+      const rawText = needString(input, 'text')
+      // 注入块不是用户说的话，先剥掉再谈别的
+      const stripped = stripInjection(rawText)
+      if (!stripped.trim()) {
+        throw new ToolError('empty_text', '这段内容只有注入块，没有要记的东西')
+      }
+      // 密钥、密码这类东西在入库前就替掉；原文也替，否则只是把明文挪了个地方
+      const { text, hits: redacted } = redact(stripped)
       const layer = input.layer ?? 'user'
       if (!LAYERS.includes(layer)) throw new ToolError('invalid_layer', `层名非法：${layer}`)
 
@@ -154,9 +171,10 @@ export function createTools({ store, clock = () => Date.now() }) {
       // 去重指纹：前 12 字相同 = 同一条，只加 hits
       const fp = fingerprint(text)
       if (fp) {
+        // candidate 也要算：同一条推断被提第二次，就是「再次提及」，不该滚成两条
         const dup = entries.find(
           (e) =>
-            e.status === 'active' &&
+            (e.status === 'active' || e.status === 'candidate') &&
             e.layer === layer &&
             fingerprint(e.text) === fp,
         )
@@ -164,8 +182,15 @@ export function createTools({ store, clock = () => Date.now() }) {
           const used = markUsed(dup, now())
           const i = entries.indexOf(dup)
           entries[i] = used
-          save(entries)
-          return { ok: true, id: used.id, status: used.status, deduped: true }
+          const { entries: after, promoted } = saveWithPromotion(entries)
+          const finalEntry = after.find((e) => e.id === used.id) ?? used
+          return {
+            ok: true,
+            id: used.id,
+            status: finalEntry.status,
+            deduped: true,
+            ...(promoted.length ? { promoted: promoted.length } : {}),
+          }
         }
       }
 
@@ -180,10 +205,13 @@ export function createTools({ store, clock = () => Date.now() }) {
           text,
           layer,
           project: input.project,
-          status: input.status ?? 'active',
+          // 模型推断写入时不许直接 active，只能进 candidate
+          status: input.status ?? (input.source === 'model' ? 'candidate' : 'active'),
           alpha: input.alpha,
           beta: input.beta,
-          evidence: input.evidence,
+          // source 与 evidence 是两件事：模型推断出来的东西，证据也只能算被动得知
+          evidence:
+            input.evidence ?? (input.source === 'model' ? 'passive' : 'explicit'),
           keywords: input.keywords,
           factKey,
           supersedes: input.supersedes,
@@ -193,8 +221,15 @@ export function createTools({ store, clock = () => Date.now() }) {
         { now: now(), seq: entries.length + 1 },
       )
       entries.push(entry)
-      save(entries)
-      return { ok: true, id: entry.id, status: entry.status }
+      const { entries: after, promoted } = saveWithPromotion(entries)
+      const finalEntry = after.find((e) => e.id === entry.id) ?? entry
+      return {
+        ok: true,
+        id: entry.id,
+        status: finalEntry.status,
+        ...(promoted.length ? { promoted: promoted.length } : {}),
+        ...(redacted.length ? { redacted: redacted.length, redactedKinds: redacted.map((h) => h.kind) } : {}),
+      }
     } catch (e) {
       return toFailure(e)
     }

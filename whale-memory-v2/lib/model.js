@@ -17,6 +17,9 @@ export const SOURCES = Object.freeze(['explicit', 'model', 'import'])
 export const MAX_TEXT_CHARS = 600
 export const MAX_SUMMARY_CHARS = 60
 export const PINNED_CAP = 30
+
+/** 压缩等级上限（4 = 只留一行目录，条目不删）。 */
+export const MAX_COMPRESSION = 4
 export const ALPHA_PIN = 1.0
 
 export class ModelError extends Error {
@@ -140,6 +143,10 @@ export function normalizeEntry(input, { now, seq = 0 } = {}) {
     evidence,
     counterEvidence: Array.isArray(input.counterEvidence) ? [...input.counterEvidence] : [],
     encodings: [t],
+    // 压缩等级：0=原文，1-3=逐级压缩，4=只剩目录
+    compressionLevel: Number.isInteger(input.compressionLevel) ? input.compressionLevel : 0,
+    // 是否已成「能独立站住的主张」—— 没固化的不压
+    consolidated: Boolean(input.consolidated),
     lastHit: 0,
     hits: 0,
     keywords,
@@ -171,6 +178,10 @@ export function validateEntry(entry) {
   if (!LAYERS.includes(entry.layer)) throw new ModelError('invalid_layer', `层名非法：${entry.layer}`)
   if (!STATUSES.includes(entry.status)) {
     throw new ModelError('invalid_status', `状态非法：${entry.status}`)
+  }
+  const lv = entry.compressionLevel ?? 0
+  if (!Number.isInteger(lv) || lv < 0 || lv > MAX_COMPRESSION) {
+    throw new ModelError('invalid_compression', `压缩等级必须是 0~${MAX_COMPRESSION} 的整数`)
   }
   if (!isFiniteNumber(entry.alpha) || entry.alpha < 0 || entry.alpha > 1) {
     throw new ModelError('invalid_alpha', 'alpha 必须在 0~1')

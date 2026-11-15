@@ -74,7 +74,13 @@ npm run test:accept   # 验收用例，必须通过
 插件已进 profile：`dsh.profile.bundles` 里是 `whale-memory-v2`，旧的 `dsh-whale-memory` 只在
 dependencies 保留（方便回滚），不再加载。数据已从旧 SQLite 迁到 `~/.dsh/whale-memory-v2`。
 
-下一步进入 P1 质量阶段：T8 候选晋升、T9 压缩分层、T10 别名、T11 脱敏。
+P1 已实现：T8 候选晋升、T9 压缩淘汰、T10 防自污染、T11 隐私脱敏（仅 E1）。
+
+**未做完的两件**：
+- T11 的 E2（引用原话必须是来源子串）—— 需要新增工具参数与契约字段
+- T9 的 D3（重试预算）—— 本插件不做 LLM 压缩，记为不适用
+
+下一步：把 P1 的改动重启验证一次，再决定是否补 E2。
 
 ## 关键约束速记
 
