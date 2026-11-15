@@ -147,6 +147,8 @@ export function normalizeEntry(input, { now, seq = 0 } = {}) {
     compressionLevel: Number.isInteger(input.compressionLevel) ? input.compressionLevel : 0,
     // 是否已成「能独立站住的主张」—— 没固化的不压
     consolidated: Boolean(input.consolidated),
+    // 引用原话（必须能在来源原文里找到，校验在写入时做）
+    quote: input.quote ? String(input.quote) : null,
     lastHit: 0,
     hits: 0,
     keywords,

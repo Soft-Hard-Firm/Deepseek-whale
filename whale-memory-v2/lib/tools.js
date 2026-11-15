@@ -195,6 +195,21 @@ export function createTools({ store, clock = () => Date.now() }) {
         }
       }
 
+      // 引用原话必须能在来源原文里找到 —— 防的是「编一句用户没说过的话当引用」
+      const quote = optString(input, 'quote', 600)
+      const quoteSource = optString(input, 'quoteSource', 20000)
+      if (quote) {
+        if (!quoteSource) {
+          throw new ToolError(
+            'quote_unverifiable',
+            '给了引用就必须同时给来源原文，否则没法验证这句是不是真的',
+          )
+        }
+        if (!quoteSource.includes(quote)) {
+          throw new ToolError('quote_mismatch', '引用的这句话在来源原文里找不到')
+        }
+      }
+
       // 写原文，拿 sourceRef
       const { sourceRef } = store.appendOriginal(text, {
         src: input.source ?? 'explicit',
@@ -216,6 +231,7 @@ export function createTools({ store, clock = () => Date.now() }) {
           keywords: input.keywords,
           factKey,
           supersedes: input.supersedes,
+          quote,
           source: input.source,
           sourceRef,
         },
@@ -488,6 +504,8 @@ export const TOOL_SPECS = {
         beta: { type: 'number', description: '**能不能当事实用**：1=用户明说 / 0.7=默认 / 0=玩笑或猜测' },
         keywords: { type: 'array', items: { type: 'string' } },
         factKey: { type: 'string', description: '同一条事只留最新时填「对象.方面」，不许写具体值' },
+        quote: { type: 'string', description: '要记的「原话」片段。**给了它就必须给 quoteSource**，否则拒收——防止把没说过的话当引用' },
+        quoteSource: { type: 'string', description: '原话出自的原文。quote 必须是它的子串，否则拒收' },
         supersedes: { type: 'string' },
       },
     },
