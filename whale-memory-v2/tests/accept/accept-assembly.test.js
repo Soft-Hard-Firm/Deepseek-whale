@@ -56,11 +56,11 @@ test('插件声明：name 与 inject 齐全', () => {
   assert.deepEqual(pluginInject, ['tools', 'systemPrompt'])
 })
 
-test('装进 ctx 后：5 个工具都注册上了', () => {
+test('装进 ctx 后：6 个工具都注册上了', () => {
   const ctx = fakeCtx()
   apply(ctx, { dir: tmpDir() })
-  assert.equal(ctx._reg.tools.size, 5)
-  for (const n of ['remember', 'search', 'recall', 'update', 'forget']) {
+  assert.equal(ctx._reg.tools.size, 6)
+  for (const n of ['remember', 'search', 'recall', 'update', 'forget', 'maintain']) {
     assert.ok(ctx._reg.tools.has(n), `缺工具 ${n}`)
   }
 })
@@ -151,7 +151,7 @@ test('开关能真正卸载：dispose 后工具与注入都没了', async () => 
   const ctx = fakeCtx()
   const dispose = apply(ctx, { dir: tmpDir() })
 
-  assert.equal(ctx._reg.tools.size, 5)
+  assert.equal(ctx._reg.tools.size, 6)
   assert.equal(ctx._reg.sections.length, 1)
   assert.equal(ctx._reg.contexts.length, 1)
 

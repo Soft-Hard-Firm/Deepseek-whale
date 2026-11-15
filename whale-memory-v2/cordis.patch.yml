@@ -1,5 +1,5 @@
 # whale-memory-v2 bundle patch：向 profile 注入新版记忆插件行。
-# host half（index.js）注册 section + context 两条注入通道，以及五个工具。
+# host half（index.js）注册 section + context 两条注入通道，以及六个工具。
 # 这里 insert 的 id 就是 host 侧配置命名空间。
 - insert:
     - id: whale-memory-v2

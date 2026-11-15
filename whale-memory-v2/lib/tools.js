@@ -23,6 +23,7 @@ import { select, DEFAULT_POLICY } from './retrieve.js'
 import { promoteDue } from './promote.js'
 import { redact } from './privacy.js'
 import { stripInjection } from './self-pollution.js'
+import { planDecay } from './decay.js'
 
 // 检索比注入宽松：门槛低、名额大，且能被翻到的状态都要查得到
 const SEARCH_POLICY = { ...DEFAULT_POLICY, threshold: 0.15, maxItems: 100 }
@@ -411,6 +412,31 @@ export function createTools({ store, clock = () => Date.now() }) {
     return input.text !== undefined ? input.text : cur.text
   }
 
+  // ── maintain ───────────────────────────────────────────
+  // 维护：把该压缩的压一级。低频操作，显式触发 —— 不挂在每次写入后面，
+  // 否则每写一条都可能改全库，副作用不可控。
+  function maintain(input = {}) {
+    try {
+      const dryRun = input.dryRun === true
+      const data = load()
+      const { entries, changed, pending } = planDecay(data.entries, now())
+
+      const touched = changed.length > 0 || pending.length > 0
+      if (touched && !dryRun) save(entries)
+
+      return {
+        ok: true,
+        changed: changed.length,
+        pending: pending.length,
+        dryRun,
+        // 只回前 20 条，结果会被重发，别把整库吐出去
+        items: changed.slice(0, 20),
+      }
+    } catch (e) {
+      return toFailure(e)
+    }
+  }
+
   // ── forget ─────────────────────────────────────────────
   function forget(input = {}) {
     try {
@@ -435,7 +461,7 @@ export function createTools({ store, clock = () => Date.now() }) {
     }
   }
 
-  return { remember, search, recall, update, forget }
+  return { remember, search, recall, update, forget, maintain }
 }
 
 /**
@@ -514,6 +540,20 @@ export const TOOL_SPECS = {
         layer: { type: 'string', enum: [...LAYERS] },
         status: { type: 'string', enum: [...STATUSES] },
         reason: { type: 'string' },
+      },
+    },
+  },
+  maintain: {
+    name: 'maintain',
+    description:
+      '维护记忆库：把「很久没被提起」的条目压深一级（0→1→2→3→4）。' +
+      '**不删除**，到顶也只是只剩一行目录。没固化的条目只会被标记，不会被压。' +
+      '这是低频操作，需要时手动跑；dryRun=true 只算计划不改库。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        dryRun: { type: 'boolean', description: '只算计划，不写盘' },
       },
     },
   },
